@@ -1,0 +1,213 @@
+---
+title: "Uncovering Sentiment Hidden in Regulatory Filings with R"
+author: "Satya Patel"
+date: "6/13/2021"
+output:
+  word_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Introduction
+
+Regulatory filings like Form 10-K provide investors and other stakeholders a wealth of information to learn about a publicly-traded company's business and financial state. Apart from financial statements, 10-K reports also provide executives' and auditors' analyses of the company's performance. These reports can be long and hard to understand. Performing sentimental analysis on them might help us better grasp the insights such reports have to offer.
+
+This exercise aims to understand the overall sentiment of the discussions in Leidos Holdings, Inc FORM 10-K filing for the financial year 2020-2021.
+
+## Loading the packages
+I used the following packages in this exercise
+1. **edgarwebR** 
+This package was created by  [Micah J Waldstein](https://micah.waldste.in/) as an interface to access the SEC's EDGAR system for company financial filings. Here it is used to access the data we need for the project.
+2. **tidyverse**
+The tidyverse is a collection of open-source R packages introduced by Hadley Wickham and his team that "share an underlying design philosophy, grammar, and data structures" of tidy data. Here it is used extensively for data cleaning and manipulation.
+3. **tidytext**
+The tidytext is a open-source R packages that applies the priniciples of tidyverse to streamline text mining.Here it is used extensively for text mining.
+4. **wordcloud**
+The wordcloud is another open-source R packages created by Ian Fellows to offer functionality to create pretty word clouds. Here it is used to create word clouds.
+4. **textdata**
+Emil Hvitfeldt created this package which includes sentiment lexicons. Here it is used to load the Loughran-McDonald sentiment lexicon. This english sentiment lexicon was created for use with financial documents and labels words with six possible sentiments important in financial contexts: "negative", "positive", "litigious", "uncertainty", "constraining", or "superfluous".
+4. **spplot**
+This R package is hosted on [github](https://github.com/spatels/spplot) to theme and apply branding to the plots created in the project.
+```{r install and load package, echo=TRUE, message=FALSE, warning=FALSE}
+# install.packages("edgarWebR")
+# install.packages("tidyverse")
+# install.packages("tidytext")
+# install.packages("wordcloud")
+# install.packages("textdata")
+library (edgarWebR)
+library(tidyverse)
+library(tidytext)
+library(wordcloud)
+library(gdata)
+library(spplot)
+library(textdata)
+```
+## Acquiring the 10-k Filing for SEC
+
+The the latest 10-k filing for Ledios Holding Inc was acquired using the edgarWebR package.
+Here is how the code works
+1. Get the CIK number
+2. Pipe the CIK number to get the company filing
+3. Filter the filings to get the latest 10-k filing (2021-02-23)
+4. Pipe the hyperlink to get the filing documents
+5. Filter to only have the 10-k document
+By now we have the url for the 10-k report
+
+6. Finally we get the raw data by parsing the filing url.
+
+```{r Data prepration, echo=TRUE}
+# Sys.setenv(EDGARWEBR_USER_AGENT = "sample_company_name youremail@example.com")
+ticker <- 'LEIDOS HOLDINGS'
+
+url.10k <- edgarWebR::cik_search(ticker) %>%
+              dplyr::select(cik) %>%
+              edgarWebR::company_filings(,type = '10-K') %>%
+              dplyr::filter(, filing_date == '2021-02-23') %>%
+              dplyr::select(href) %>%
+              as.character(drop = T) %>%
+              edgarWebR::filing_documents() %>%
+              dplyr::filter(,type == '10-K') %>%
+              dplyr::select(href) %>%
+              as.character(drop = T)
+
+report.10k <- edgarWebR::parse_filing(url.10k) %>%
+              na_if('')%>% 
+              filter(!is.na(part.name), part.name == c('PART I','PART II')) # exclude section that are not needed
+
+```
+
+## Mining the Raw Data
+The raw data was mined using the following code.
+Here is how the code works:
+1. Create a copy of the raw data
+2. split the text columns into one token per row.
+```{r text mining, echo=TRUE}
+copy.report.10k <-report.10k
+words <- copy.report.10k %>%
+  tidytext::unnest_tokens(word, text)
+```
+
+## Data cleaning
+The mined data was clearned to remove numerics and stop words using the following code.
+```{r Data cleaning, echo=TRUE, message=FALSE, warning=FALSE}
+num <- "([0-9]{2})"
+rmv.num<-data.frame(str_subset(words$word,num))
+colnames(rmv.num) <- 'word' 
+
+words <- words %>%
+  dplyr::ungroup() %>%
+  dplyr::anti_join(rmv.num)%>%
+  dplyr::ungroup() %>%
+  dplyr::anti_join(stop_words)
+```
+
+## Making a word cloud
+A word cloud was generated using the following code.
+```{r word cloud, echo=TRUE, message=FALSE, warning=FALSE}
+wordcloud<- words %>%
+  dplyr::ungroup() %>%
+  count(word) %>%
+  with(wordcloud::wordcloud(word,n,max.words = 75, use.r.layout=FALSE, rot.per=0.35,colors=brewer.pal(5, "Set1")))
+```
+
+## Categorise words into sentiments
+To categorize the words into sentiments I created an inner join with the Loughran lexicon and counted the number of words in each category. 
+
+```{r categorise words, echo=TRUE, message=FALSE, warning=FALSE}
+loughran <- words %>%
+  dplyr::inner_join(tidytext::get_sentiments("loughran"), by=c("word"))
+
+word.count.per.category <- loughran %>%
+                           count(sentiment)
+
+word.count.per.category
+
+individual.sentiment.word.count <- loughran %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+```
+
+## Exploratory Analysis
+
+The total words were counted and percentage of Sentimental and Non-Sentimental words were calculated.
+```{r calculate percentage of sentiment and non-sentiment words, echo=TRUE}
+# summary calculations ----
+# total words
+total.words<- words %>% 
+               summarize(words = n()) %>%
+               as.numeric()
+total.words
+
+# % sentiment words
+percent.sentiment.words<- (word.count.per.category %>% 
+               summarize(n = sum(n)) %>%
+               as.numeric()) / total.words * 100
+percent.sentiment.words
+
+# derive total non sentiment words
+percent.nonsentiment.words<- (total.words-total.sentiment.words) / total.words * 100
+percent.nonsentiment.words
+
+# create a data frame to hold summary calculations
+summary <- data.frame(type = c('sentiment', 'non-sentiment'),
+                      "percentage" = c(percent.sentiment.words,percent.nonsentiment.words))
+summary
+```
+From the pie chart below we see that only 12 percent of all the words in the filing were sentimental. 
+```{r visualize percentage type, echo=TRUE}
+type.breakdown <-summary %>% 
+  ggplot(aes(x="",y = percentage, fill = type)) +
+  geom_bar(stat = "identity", color = "black") + 
+  coord_polar("y", start=0) +
+  sp_theme() + 
+  theme(axis.title.y = element_blank(),axis.title.x = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank())+
+  scale_fill_manual("type", values = c("sentiment" = "#f26b38", "non-sentiment" = "#38bff2")) + 
+  geom_text(aes(y = percentage, label = round(percentage,2)), color = "black", size=8,hjust=1, vjust=-1)+
+  labs(title = "There are more non-sentimental words used compared to sentimental words",
+       subtitle = "(Financial Year 2020-2021)",
+       caption = "Source: Leidos Holding Inc 10-K Filed in Febuary 2021"
+  )
+brand_plot(type.breakdown)
+```
+
+Out of all the sentimental words, negative sentiment was the most prevalent followed by litigious, uncertainty,constraining and positive.
+
+It is important to note that litigious contains words related to law and in this case it is favorable as Leidos's revenue as they are a one of the prime contractor of the Federal Government.
+```{r overall category visualization, echo=TRUE, message=FALSE, warning=FALSE}
+overall.category.visual <- ggplot(word.count.per.category, aes(x=sentiment, y=n, fill = sentiment)) + 
+      sp_theme()+
+      geom_col(show.legend = FALSE)+ 
+      scale_fill_manual(values = c("constraining" = "#F5BB00", "litigious" = "#8EA604", "negative" = "#38BFF2","positive" = "#F26B38", "superfluous" = "#AA1155", "uncertainty" = "#8D3B72")) + 
+  labs(title = "Prevelance of an Overall Critical Outlook.",
+       subtitle = "(Financial Year 2020-2021)",
+       caption = "Source: Leidos Holding Inc 10-K Filed in Febuary 2021",
+       x = "Sentiment",
+       y = "Number of Words")
+
+brand_plot(overall.category.visual)
+```
+Looking at the top ten words from each sentiment category, it is clear that contracts have a significant impact on the business model.
+```{r individual category visualization, echo=TRUE}
+individual.category.visual <- individual.sentiment.word.count %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) + 
+  sp_theme()+
+  geom_col(show.legend = FALSE)+ 
+  facet_wrap(~sentiment, scales = "free_y")+
+  theme(axis.title.y = element_blank()) +
+  scale_fill_manual(values = c("constraining" = "#F5BB00", "litigious" = "#8EA604", "negative" = "#38BFF2","positive" = "#F26B38", "superfluous" = "#AA1155", "uncertainty" = "#8D3B72")) + 
+  labs(title = "Clear Dependance on Contracts.",
+       subtitle = "(Financial Year 2020-2021)",
+       caption = "Source: Leidos Holding Inc 10-K Filed in Febuary 2021",
+       x = "Number of Words")
+
+brand_plot(individual.category.visual)
+```
+
+## Conclusion
+The sentiment analysis of 2020 annual report shows that the contracts are important source of Leidos's business. The report shows a balanced sentiment with a slight overall outlook. 
